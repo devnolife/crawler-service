@@ -1,0 +1,14 @@
+[Unit]
+Description=Revisi Studio crawler search API
+After=network.target
+
+[Service]
+Type=simple
+WorkingDirectory=%h/studio-revisi/crawler
+EnvironmentFile=-%h/studio-revisi/crawler/.env
+ExecStart=%h/studio-revisi/crawler/.venv/bin/uvicorn api.main:app --host 127.0.0.1 --port 8770
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=default.target
