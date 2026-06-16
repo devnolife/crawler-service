@@ -6,6 +6,7 @@ Run:
 from __future__ import annotations
 
 import json
+import logging
 import os
 from typing import Optional
 
@@ -16,6 +17,8 @@ from pydantic import BaseModel
 
 from revisi_crawler import db as crawler_db
 
+
+logger = logging.getLogger("crawler.api")
 
 OLLAMA_URL = os.environ.get("OLLAMA_URL", "http://127.0.0.1:11434")
 OLLAMA_MODEL = os.environ.get("OLLAMA_MODEL", "qwen2.5:7b-instruct")
@@ -387,6 +390,7 @@ def similarity_check(payload: dict) -> SimilarityResponse:
 class TitleSuggestion(BaseModel):
     title: str
     rationale: str
+    methodology_hint: str | None = None
 
 
 class TitleGenResponse(BaseModel):
@@ -397,7 +401,12 @@ class TitleGenResponse(BaseModel):
 
 
 def _fetch_context_papers(topic: str, k: int = 8) -> list[dict]:
-    """Ambil k paper teratas yang relevan dengan topik dari DB."""
+    """Ambil k paper teratas yang relevan dengan topik dari DB.
+
+    Degradasi anggun: bila DB korpus crawler belum di-setup / tidak bisa
+    diakses, kembalikan list kosong supaya generator judul tetap jalan
+    (mode tanpa konteks, mengandalkan LLM saja) alih-alih 500.
+    """
     keywords = _extract_keywords(topic, k=6)
     import re as _re
     safe = [_re.sub(r"[^A-Za-z0-9À-ÿ]", "", w) for w in keywords if len(w) >= 4]
@@ -415,10 +424,14 @@ def _fetch_context_papers(topic: str, k: int = 8) -> list[dict]:
          ORDER BY rank DESC, year DESC NULLS LAST
          LIMIT %(k)s
     """
-    with crawler_db.connect() as conn:
-        with conn.cursor() as cur:
-            cur.execute(sql, {"q": ts_query, "k": k})
-            return cur.fetchall()
+    try:
+        with crawler_db.connect() as conn:
+            with conn.cursor() as cur:
+                cur.execute(sql, {"q": ts_query, "k": k})
+                return cur.fetchall()
+    except Exception as exc:  # noqa: BLE001 — korpus opsional, jangan matikan endpoint
+        logger.warning("title-suggest: lewati konteks paper (DB tak tersedia): %s", exc)
+        return []
 
 
 def _ollama_generate(prompt: str, *, model: str = OLLAMA_MODEL,
@@ -475,24 +488,37 @@ def title_suggest(payload: dict) -> TitleGenResponse:
 
     prog_line = f"Program studi: {program}\n" if program else ""
 
-    prompt = f"""Anda adalah dosen pembimbing skripsi. Tugas Anda membantu mahasiswa merumuskan calon judul skripsi yang spesifik, fokus, dan layak dikerjakan.
+    prompt = f"""Anda adalah dosen pembimbing skripsi berpengalaman. Bantu mahasiswa merumuskan calon judul skripsi yang spesifik, fokus, dan layak dikerjakan dalam 1 semester.
 
 Topik mahasiswa: {topic}
 {prog_line}{context_block}
 
 {gap_instr}
 
-Hasilkan TEPAT {n} calon judul, masing-masing diikuti satu kalimat singkat alasan (kenapa judul itu menarik / apa gap-nya).
+ANATOMI judul skripsi yang baik (ikuti polanya):
+[metode/pendekatan] + [variabel/objek utama] + [kata relasi: pengaruh/hubungan/terhadap] + [variabel terikat] + [konteks objek/populasi/lokasi: "pada ... di ..."]
+
+ATURAN MUTU (wajib dipatuhi tiap judul):
+- panjang 8-20 kata, spesifik & terukur (hindari judul terlalu umum)
+- gunakan Huruf Kapital di Awal Tiap Kata (Title Case)
+- ada kata relasi penelitian (pengaruh/hubungan/analisis/implementasi/perbandingan)
+- ada konteks objek/lokasi penelitian (mis. "pada Siswa SMA", "di Kota Makassar")
+- hindari kata kabur: beberapa, suatu, berbagai, tentang, mengenai
+- jangan menyalin judul paper yang sudah ada — cari sudut/gap baru
+
+CONTOH judul kuat (tiru POLA & MUTUnya, bukan isinya):
+"Pengaruh Model Pembelajaran Problem Based Learning terhadap Kemampuan Berpikir Kritis Siswa pada Mata Pelajaran IPA di SMP Negeri 1 Makassar"
+
+Hasilkan TEPAT {n} calon judul. Untuk tiap judul beri: alasan singkat (gap/keunggulan) dan saran metode/dataset/teknik analisis.
 
 WAJIB output JSON valid berikut, tanpa teks tambahan apa pun:
 {{
   "suggestions": [
-    {{"title": "judul 1", "rationale": "alasan singkat"}},
-    {{"title": "judul 2", "rationale": "alasan singkat"}}
+    {{"title": "judul lengkap", "rationale": "alasan singkat 1 kalimat", "methodology_hint": "saran metode/dataset/analisis 1 kalimat"}}
   ]
 }}
 """
-    raw = _ollama_generate(prompt, temperature=0.7, max_tokens=800)
+    raw = _ollama_generate(prompt, temperature=0.7, max_tokens=1100)
 
     # Parse JSON: model bisa wrap dalam ```json ... ```
     import re as _re
@@ -504,8 +530,13 @@ WAJIB output JSON valid berikut, tanpa teks tambahan apa pun:
             for s in (data.get("suggestions") or [])[:n]:
                 title = str(s.get("title", "")).strip()
                 rationale = str(s.get("rationale", "")).strip()
+                method = str(s.get("methodology_hint", "")).strip()
                 if title:
-                    suggestions.append(TitleSuggestion(title=title, rationale=rationale or "—"))
+                    suggestions.append(TitleSuggestion(
+                        title=title,
+                        rationale=rationale or "—",
+                        methodology_hint=method or None,
+                    ))
         except json.JSONDecodeError:
             pass
 
