@@ -165,10 +165,14 @@ def trend(
          GROUP BY year
          ORDER BY year
     """
-    with crawler_db.connect() as conn:
-        with conn.cursor() as cur:
-            cur.execute(sql, params)
-            rows = cur.fetchall()
+    try:
+        with crawler_db.connect() as conn:
+            with conn.cursor() as cur:
+                cur.execute(sql, params)
+                rows = cur.fetchall()
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("trend query failed: %s", exc)
+        raise HTTPException(status_code=503, detail=f"db error: {exc}")
     series = [TrendPoint(year=int(r["year"]), count=int(r["c"])) for r in rows]
     return TrendResponse(query=q, total=sum(p.count for p in series), series=series)
 

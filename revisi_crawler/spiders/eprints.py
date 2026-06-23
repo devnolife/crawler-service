@@ -101,9 +101,26 @@ class EprintsSpider(scrapy.Spider):
         # Pagination: continue while we still see results and haven't hit cap.
         if record_links and self._page_seen < self.max_pages:
             next_offset = self._page_seen * 20
-            yield scrapy.Request(
-                self._build_search_url(next_offset), callback=self.parse_search
-            )
+            # EPrints paginates cached searches via `search_offset` links that
+            # embed the server-side cache id + search expression. Several repos
+            # (e.g. digilib.uin-suka.ac.id) ignore a hand-built `_offset` and
+            # just re-serve page 1, so prefer following the real pagination link
+            # rendered on the page. Fall back to the legacy `_offset` URL for
+            # older themes that don't render one.
+            next_href = None
+            for href in response.css(
+                'a[href*="search_offset="]::attr(href)'
+            ).getall():
+                m = re.search(r"search_offset=(\d+)", href)
+                if m and int(m.group(1)) == next_offset:
+                    next_href = href
+                    break
+            if next_href:
+                yield response.follow(next_href, callback=self.parse_search)
+            else:
+                yield scrapy.Request(
+                    self._build_search_url(next_offset), callback=self.parse_search
+                )
 
     def parse_record(self, response: scrapy.http.Response):
         meta = self._collect_dublin_core(response)
