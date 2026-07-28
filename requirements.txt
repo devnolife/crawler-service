@@ -1,5 +1,5 @@
-Scrapy>=2.11,<2.13
-Twisted>=24,<25
+Scrapy>=2.14.2,<3
+Twisted>=26.4,<27
 itemadapter>=0.8
 psycopg[binary]>=3.2,<4
 fastapi>=0.115,<1
