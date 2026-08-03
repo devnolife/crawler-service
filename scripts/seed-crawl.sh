@@ -1,9 +1,15 @@
 #!/usr/bin/env bash
-# Re-crawl curated EPrints repositories. Idempotent: pipeline upserts.
+# Re-crawl curated EPrints repositories. Idempotent: upsert ke Postgres.
 set -euo pipefail
 
 cd "$(dirname "$0")/.."
-SCRAPY=".venv/bin/scrapy"
+CRAWL="bin/crawler-crawl"
+
+# Build binary bila belum ada.
+if [[ ! -x "$CRAWL" ]]; then
+  echo "==> build $CRAWL"
+  go build -o "$CRAWL" ./cmd/crawl
+fi
 
 # Tambahkan target baru di bawah ini. Format: <base_url>|<query>|<max_pages>
 TARGETS=(
@@ -28,12 +34,10 @@ TARGETS=(
 for entry in "${TARGETS[@]}"; do
   IFS='|' read -r url q pages <<<"$entry"
   echo "==> $url  ($q, ${pages} pages)"
-  "$SCRAPY" crawl eprints \
-    -a base_url="$url" \
-    -a query="$q" \
-    -a max_pages="$pages" \
-    -s LOG_LEVEL=WARNING \
-    -s FEEDS='' || echo "  (failed, lanjut target berikutnya)"
+  "$CRAWL" \
+    -base-url "$url" \
+    -query "$q" \
+    -max-pages "$pages" || echo "  (failed, lanjut target berikutnya)"
 done
 
 echo "==> done"

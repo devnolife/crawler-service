@@ -6,7 +6,7 @@ After=network.target
 Type=simple
 WorkingDirectory=%h/studio-revisi/crawler
 EnvironmentFile=-%h/studio-revisi/crawler/.env
-ExecStart=%h/studio-revisi/crawler/.venv/bin/uvicorn api.main:app --host 127.0.0.1 --port 8770
+ExecStart=%h/studio-revisi/crawler/bin/crawler-api --addr 127.0.0.1:8770
 Restart=on-failure
 RestartSec=5
 

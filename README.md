@@ -1,52 +1,53 @@
-# crawler-service — layanan crawling akademik bersama
+# crawler-service — layanan crawling akademik bersama (Go)
 
 Shared service untuk semua project (studio-revisi, wizard-research, dll):
 crawl repositori EPrints kampus Indonesia → Postgres → HTTP API dengan
 auth API key per client. **Detail lengkap: lihat [PRD.md](PRD.md).**
 
-> Status: produksi (API :8770) + 1 spider generik EPrints.
+> Status: produksi (API :8770) + 1 crawler generik EPrints.
 > Target awal: `eprints.ums.ac.id`. Pattern berlaku untuk repository EPrints
 > Indonesia lainnya (UI, ITB, ITS, UGM, UNY, UPI dll.).
 
 ## Struktur
 
 ```
-crawler/
-├── revisi_crawler/
-│   ├── __init__.py
-│   ├── settings.py
-│   ├── items.py            # schema ResearchItem
-│   ├── pipelines.py        # TimestampPipeline
-│   └── spiders/
-│       ├── __init__.py
-│       └── eprints.py      # spider generic EPrints
-├── output/                 # hasil crawl (gitignored)
-├── requirements.txt
-├── scrapy.cfg
+crawler-service/
+├── cmd/
+│   ├── api/            # binary HTTP API (crawler-api)
+│   └── crawl/          # binary crawler EPrints (crawler-crawl)
+├── internal/
+│   ├── api/            # handler + middleware (auth, rate limit, CORS)
+│   ├── crawler/        # crawler generik EPrints (robots.txt, delay, retry)
+│   ├── db/             # koneksi Postgres + skema + upsert
+│   ├── model/          # tipe Paper bersama
+│   └── ollama/         # klien Ollama /api/generate
+├── deploy/crawler-api.service
+├── scripts/seed-crawl.sh
+├── go.mod
 └── README.md
 ```
 
-## Setup di server (`studio-server`)
+## Build
 
 ```bash
-ssh studio-server
-cd ~/studio-revisi/crawler
-python3 -m venv .venv
-source .venv/bin/activate
-pip install -U pip
-pip install -r requirements.txt
+go build -o bin/crawler-api   ./cmd/api
+go build -o bin/crawler-crawl ./cmd/crawl
 ```
 
-## Jalankan spider EPrints
+## Jalankan crawler EPrints
 
 ```bash
 # UMS, keyword "machine learning", 2 halaman search (max 40 record)
-scrapy crawl eprints \
-  -a base_url=https://eprints.ums.ac.id \
-  -a query="machine learning" \
-  -a max_pages=2 \
-  -O output/ums-ml.json
+bin/crawler-crawl \
+  -base-url https://eprints.ums.ac.id \
+  -query "machine learning" \
+  -max-pages 2 \
+  -out output/ums-ml.json
 ```
+
+Hasil otomatis di-upsert ke Postgres bila `CRAWLER_DATABASE_URL` bisa
+diakses (skema dibuat otomatis). Pakai `-no-db` untuk skip Postgres,
+`-out` untuk simpan JSON.
 
 Output JSON per item:
 
@@ -64,25 +65,63 @@ Output JSON per item:
   "dataset_urls": ["https://eprints.ums.ac.id/.../ARTICLE PUBLICATION.pdf"],
   "has_dataset": true,
   "is_open_access": true,
-  "scraped_at": "2026-05-21T06:30:00+00:00"
+  "scraped_at": "2026-05-21T06:30:00Z"
 }
 ```
 
-## Etika & rate-limit
+## Jalankan API
 
-- `ROBOTSTXT_OBEY = True`
-- `DOWNLOAD_DELAY = 1.5` detik
-- `CONCURRENT_REQUESTS_PER_DOMAIN = 2`
-- `AUTOTHROTTLE_ENABLED = True` — auto-adjust based on latency
-- User-Agent: `revisi-studio-crawler/0.1 (+https://revisi-studio.id)`
+```bash
+bin/crawler-api --addr 127.0.0.1:8770
+```
+
+Env:
+
+| Variabel | Default | Keterangan |
+| --- | --- | --- |
+| `CRAWLER_DATABASE_URL` | `postgresql://postgres:postgres@127.0.0.1:5432/revisi_crawler` | Postgres DSN |
+| `CRAWLER_API_HOST` / `CRAWLER_API_PORT` | `127.0.0.1` / `8770` | bind API (override via `--addr`) |
+| `CRAWLER_API_KEYS` | (kosong = auth mati) | `key:client,key2:client2` — request wajib header `X-API-Key` |
+| `CRAWLER_RATE_LIMIT_PER_MINUTE` | `120` | sliding window per client |
+| `OLLAMA_URL` | `http://127.0.0.1:11434` | untuk title-suggest |
+| `OLLAMA_MODEL` | `qwen2.5:7b-instruct` | model Ollama |
+
+Endpoint:
+
+- `GET  /health` — publik, cek DB + jumlah papers
+- `GET  /api/v1/datasets/search?q=...&source=...&year_min=...&year_max=...&has_dataset=...&limit=20&offset=0`
+- `GET  /api/v1/datasets/trend?q=...&year_min=2015&year_max=2030`
+- `POST /api/v1/citations/suggest` — `{"paragraph": "...", "limit": 5}`
+- `POST /api/v1/similarity/check` — `{"text": "...", "limit": 5}`
+- `POST /api/v1/research/title-suggest` — `{"topic": "...", "program": "...", "n": 5}`
+
+## Etika & rate-limit crawler
+
+- Patuh `robots.txt` (per user-agent group)
+- Delay antar-request 1.5 detik (ubah via `-delay`)
+- Retry ringan (2x) hanya untuk 5xx/429
+- User-Agent: `revisi-studio-crawler/0.2 (+https://revisi-studio.id)`
+
+## Seed crawl
+
+```bash
+scripts/seed-crawl.sh   # crawl daftar repo terkurasi, upsert idempotent
+```
+
+## Deploy (systemd user unit)
+
+```bash
+go build -o bin/crawler-api ./cmd/api
+cp deploy/crawler-api.service ~/.config/systemd/user/
+systemctl --user daemon-reload
+systemctl --user enable --now crawler-api
+```
 
 ## Roadmap
 
-- [ ] Spider tambahan: `data_go_id.py` (CKAN API), `bps.py`, `openalex.py`
-- [ ] Output ke Postgres (bukan JSON) supaya bisa di-query webapp
-- [ ] APScheduler / systemd timer: re-crawl mingguan
-- [ ] REST endpoint di FastAPI: `GET /api/v1/datasets/search?q=...`
-- [ ] Webapp page: `/research/data-finder` consume endpoint di atas
+- [ ] Crawler tambahan: data.go.id (CKAN API), BPS, OpenAlex
+- [ ] Scheduler internal (cron/systemd timer): re-crawl mingguan
+- [ ] Webapp page: `/research/data-finder` consume endpoint search
 
 ## Catatan deploy
 

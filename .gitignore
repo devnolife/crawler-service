@@ -1,7 +1,10 @@
-.venv/
-__pycache__/
-*.pyc
+# Go
+bin/
+*.test
+
+# Hasil crawl
 output/
-httpcache/
+
+# Env & log
+.env
 *.log
-.scrapy/

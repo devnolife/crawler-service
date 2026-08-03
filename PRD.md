@@ -7,7 +7,7 @@
 | Repo | `github.com/devnolife/crawler-service` |
 | Versi API | 0.2.0 |
 | Port kanonik | `8770` (host `127.0.0.1`) |
-| Runtime | Python 3.10 · FastAPI + Uvicorn · Scrapy · PostgreSQL |
+| Runtime | Go 1.23+ · net/http · goquery · pgx · PostgreSQL |
 | Status | Produksi (systemd `revisi-crawler.service` — akan di-rename `crawler-service`) |
 
 ---
@@ -28,7 +28,7 @@ Sebelumnya crawler tertanam di dalam monorepo studio-revisi, sehingga:
 
 1. Satu layanan crawling + search yang dipakai **lintas project via HTTP API**.
 2. **Auth per client** (API key per project) dan **rate limit per client**.
-3. Deploy mandiri: repo sendiri, venv sendiri, unit systemd sendiri.
+3. Deploy mandiri: repo sendiri, binary statis sendiri, unit systemd sendiri.
 
 ### Non-tujuan
 - Bukan mesin crawl real-time on-demand — crawl berjalan batch/terjadwal, API
@@ -49,24 +49,25 @@ Sebelumnya crawler tertanam di dalam monorepo studio-revisi, sehingga:
 ## 4. Arsitektur
 
 ```
-┌─────────────┐   scrapy crawl (cron/manual)   ┌──────────────┐
+┌─────────────┐  crawler-crawl (cron/manual)   ┌──────────────┐
 │ EPrints     │ ─────────────────────────────▶ │ PostgreSQL   │
 │ repos (.id) │                                │ tabel papers │
 └─────────────┘                                └──────┬───────┘
                                                       │ read
                   X-API-Key per client         ┌──────▼───────┐
-  studio-revisi ─────────────────────────────▶ │ FastAPI :8770│
-  wizard-research ───────────────────────────▶ │ api/main.py  │──▶ Ollama
+  studio-revisi ─────────────────────────────▶ │ Go API :8770 │
+  wizard-research ───────────────────────────▶ │ cmd/api      │──▶ Ollama
   project lain ──────────────────────────────▶ └──────────────┘   (citation/title LLM)
 ```
 
 ### Komponen
-- **`revisi_crawler/`** — Scrapy project.
-  - `spiders/eprints.py` — spider generik EPrints (Dublin Core meta tags);
-    parameter `base_url`, `query`, `max_pages`. Sopan: delay 1.5s, 2 req/domain.
-  - `items.py` — schema `ResearchItem`; `pipelines.py` — timestamp; `db.py` —
-    upsert ke Postgres.
-- **`api/main.py`** — FastAPI, baca Postgres + panggil Ollama untuk fitur LLM.
+- **`internal/crawler/`** — crawler generik EPrints (Dublin Core meta tags);
+  parameter `-base-url`, `-query`, `-max-pages`. Sopan: patuh robots.txt,
+  delay 1.5s, retry ringan.
+- **`internal/db/`** — koneksi pgx + skema + upsert `papers`.
+- **`internal/api/`** — HTTP handler + middleware (auth, rate limit, CORS),
+  baca Postgres + panggil Ollama untuk fitur LLM.
+- **`cmd/crawl/`**, **`cmd/api/`** — binary `crawler-crawl` dan `crawler-api`.
 - **`scripts/seed-crawl.sh`** — seed crawl kampus-kampus umum.
 - **`deploy/crawler-api.service`** — unit systemd user.
 
@@ -84,7 +85,6 @@ Base URL: `http://127.0.0.1:8770`
 | Method | Path | Fungsi |
 |---|---|---|
 | GET | `/health` | status + jumlah papers |
-| GET | `/docs`, `/openapi.json` | dokumentasi |
 
 ### Terproteksi (header `X-API-Key` bila auth aktif)
 | Method | Path | Fungsi |
@@ -134,26 +134,27 @@ Lihat `.env.example`. Ringkasan:
 ### Setup
 ```bash
 cd ~/crawler-service
-python3 -m venv .venv && .venv/bin/pip install -U pip -r requirements.txt
+go build -o bin/crawler-api ./cmd/api
+go build -o bin/crawler-crawl ./cmd/crawl
 cp .env.example .env   # isi CRAWLER_API_KEYS!
 ```
 
 ### Menjalankan API
 ```bash
-.venv/bin/uvicorn api.main:app --host 127.0.0.1 --port 8770
+bin/crawler-api --addr 127.0.0.1:8770
 # atau: systemctl --user start crawler-api (lihat deploy/)
 ```
 
 ### Crawl
 ```bash
-.venv/bin/scrapy crawl eprints \
-  -a base_url=https://eprints.ums.ac.id -a query="machine learning" -a max_pages=3
+bin/crawler-crawl -base-url https://eprints.ums.ac.id \
+  -query "machine learning" -max-pages 3
 # atau batch: scripts/seed-crawl.sh
 ```
 
 ### Catatan produksi (server hpc-ai)
 - Unit aktif saat ini: `revisi-crawler.service` → masih menunjuk
-  `~/studio-revisi-core/crawler`. Migrasi ke folder ini = buat venv, set
+  `~/studio-revisi-core/crawler`. Migrasi ke folder ini = build binary, set
   `.env` (WAJIB isi `CRAWLER_API_KEYS`), update `WorkingDirectory`/`ExecStart`,
   `systemctl --user daemon-reload && restart`.
 - Bind tetap `127.0.0.1` — konsumen di mesin yang sama. Kalau perlu lintas
@@ -170,22 +171,23 @@ cp .env.example .env   # isi CRAWLER_API_KEYS!
 
 | Risiko | Mitigasi |
 |---|---|
-| Situs EPrints berubah markup | Spider berbasis Dublin Core (stabil antar versi EPrints); fallback regex |
-| Crawl terlalu agresif → IP diblok kampus | `DOWNLOAD_DELAY=1.5`, 2 req/domain; jangan turunkan |
+| Situs EPrints berubah markup | Crawler berbasis Dublin Core (stabil antar versi EPrints); fallback regex |
+| Crawl terlalu agresif → IP diblok kampus | delay 1.5s antar-request; jangan turunkan |
 | Rate limit in-memory hilang saat restart | Diterima untuk 1 proses; kalau perlu multi-proses → Redis |
 | Key bocor di repo konsumen | Key hanya di `.env`/secret store; rotasi = ganti 1 entri |
 | Ollama down → citations/title-suggest gagal | Endpoint search/trend tetap hidup (tak tergantung LLM) |
 
 ## 11. Roadmap
 
-- [ ] Spider tambahan: OJS (jurnal kampus), Garuda, Rama Repository
-- [ ] Crawl terjadwal via systemd timer (per sumber, per minggu)
+- [ ] Spider tambahan: OJS (jurnal kampus), Garuda, Rama Repository- [ ] Crawl terjadwal via systemd timer (per sumber, per minggu)
 - [ ] Endpoint `/api/v1/stats` per client (observability pemakaian)
 - [ ] Rate limit backed Redis bila pindah multi-worker
 - [ ] Embedding search (pgvector) di samping FTS
 
 ## 12. Changelog Keputusan
 
+- **2026-08-03** — Rewrite total ke Go (net/http + goquery + pgx): single
+  binary, tanpa venv, kontrak API tetap 100% kompatibel.
 - **2026-08-03** — Dipisah dari monorepo studio-revisi (history dipertahankan via
   `git subtree split`). Ditambah auth multi-client + rate limit per client.
   Sumber kanonik: repo ini; copy di `studio-revisi-core/crawler` akan pensiun.
