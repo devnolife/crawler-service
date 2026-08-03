@@ -1,8 +1,10 @@
-# crawler — research data finder
+# crawler-service — layanan crawling akademik bersama
 
-MVP Scrapy project untuk fitur **"cari dataset"** di hub *Riset Skripsi*.
+Shared service untuk semua project (studio-revisi, wizard-research, dll):
+crawl repositori EPrints kampus Indonesia → Postgres → HTTP API dengan
+auth API key per client. **Detail lengkap: lihat [PRD.md](PRD.md).**
 
-> Status: scaffold + 1 spider demo (EPrints generic).
+> Status: produksi (API :8770) + 1 spider generik EPrints.
 > Target awal: `eprints.ums.ac.id`. Pattern berlaku untuk repository EPrints
 > Indonesia lainnya (UI, ITB, ITS, UGM, UNY, UPI dll.).
 
