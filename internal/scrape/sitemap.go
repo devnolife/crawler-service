@@ -35,7 +35,12 @@ type MapResult struct {
 const maxSitemapBytes = 20 << 20
 
 // maxSitemapFiles membatasi jumlah file sitemap yang diikuti dari index.
-const maxSitemapFiles = 10
+// Toko besar (Shopify dll) memecah katalog ke puluhan file, jadi batas ini
+// perlu longgar agar produk di file terakhir tetap terjangkau.
+const maxSitemapFiles = 50
+
+// maxSitemapURLs membatasi total URL yang dikumpulkan dari seluruh sitemap.
+const maxSitemapURLs = 200_000
 
 // Map menemukan URL internal sebuah situs: coba sitemap.xml dulu
 // (termasuk direktif Sitemap: di robots.txt dan sitemap index),
@@ -82,7 +87,7 @@ func fromSitemaps(ctx context.Context, client *http.Client, target *url.URL) []s
 	seen := map[string]bool{}
 	var links []string
 	fetched := 0
-	for len(candidates) > 0 && fetched < maxSitemapFiles {
+	for len(candidates) > 0 && fetched < maxSitemapFiles && len(links) < maxSitemapURLs {
 		smURL := candidates[0]
 		candidates = candidates[1:]
 		if seen["sm:"+smURL] {
