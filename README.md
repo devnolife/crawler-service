@@ -83,6 +83,10 @@ Env:
 | `CRAWLER_API_HOST` / `CRAWLER_API_PORT` | `127.0.0.1` / `8770` | bind API (override via `--addr`) |
 | `CRAWLER_API_KEYS` | (kosong = auth mati) | `key:client,key2:client2` — request wajib header `X-API-Key` |
 | `CRAWLER_RATE_LIMIT_PER_MINUTE` | `120` | sliding window per client |
+| `CRAWLER_CRAWL_CONCURRENCY` | `2` | job crawl on-demand paralel maksimal |
+| `CRAWLER_REDIS_ADDR` | (kosong = in-memory) | Redis untuk job queue durable (asynq): job tahan restart, retry otomatis |
+| `CRAWLER_CDP_URL` | (kosong = render_js mati) | endpoint CDP browser headless, mis. `ws://127.0.0.1:9222` (Lightpanda) |
+| `CRAWLER_WEBHOOK_SECRET` | (kosong = tanpa signature) | secret HMAC-SHA256 untuk header `X-Signature` webhook |
 | `OLLAMA_URL` | `http://127.0.0.1:11434` | untuk title-suggest |
 | `OLLAMA_MODEL` | `qwen2.5:7b-instruct` | model Ollama |
 
@@ -94,6 +98,45 @@ Endpoint:
 - `POST /api/v1/citations/suggest` — `{"paragraph": "...", "limit": 5}`
 - `POST /api/v1/similarity/check` — `{"text": "...", "limit": 5}`
 - `POST /api/v1/research/title-suggest` — `{"topic": "...", "program": "...", "n": 5}`
+- `POST /api/v1/scrape` — on-demand: `{"url": "...", "only_main_content": true, "timeout_ms": 30000, "render_js": false}` → fetch + readability + markdown langsung (tanpa Postgres); `render_js: true` merender via browser CDP untuk situs SPA
+- `POST /api/v1/crawl` — async: `{"url": "...", "max_pages": 10, "max_depth": 2, "delay_ms": 1000, "persist": false, "render_js": false}` → `202 {"job_id": "..."}`; BFS link internal satu host, patuh robots.txt; `persist: true` menyimpan tiap halaman ke tabel `scraped_pages`
+- `GET  /api/v1/crawl/{id}` — poll status job (`pending|running|completed|failed`) + hasil `pages[]` markdown; job disimpan in-memory 30 menit
+- `POST /api/v1/extract` — `{"url": "..." | "markdown": "...", "schema": {...}, "prompt": "..."}` → scrape (bila url) + Ollama structured output sesuai JSON schema
+- `POST /api/v1/map` — `{"url": "...", "limit": 100, "search": "..."}` → daftar URL internal situs via sitemap.xml (fallback BFS ringan)
+- `GET  /api/v1/pages/search?q=...&host=...&limit=20&offset=0&include_markdown=true` — FTS halaman hasil crawl yang di-persist
+- `POST /api/v1/batch/scrape` — async multi-URL: `{"urls": ["..."], "delay_ms": 1000, "persist": false, "render_js": false, "webhook": "https://..."}` (max 50 URL) → `202 {"job_id": "..."}`
+- `GET  /api/v1/batch/scrape/{id}` — poll status job batch (format sama dengan crawl)
+
+Field `webhook` (di `/crawl` dan `/batch/scrape`): saat job selesai, service
+mem-POST ringkasan `{job_id, kind, status, total, error_count, completed_at}`
+ke URL tersebut (retry 3×). Bila env `CRAWLER_WEBHOOK_SECRET` di-set, request
+ditandatangani HMAC-SHA256 di header `X-Signature: sha256=<hex>`.
+
+## JS rendering (Lightpanda)
+
+Untuk situs SPA (React/Vue dll), `render_js: true` merender halaman lewat
+browser headless eksternal via CDP. Direkomendasikan [Lightpanda]
+(https://github.com/lightpanda-io/browser) — ~16× lebih hemat RAM dan ~9×
+lebih cepat dari Chrome headless; kompatibel juga dengan Chrome/Chromium.
+
+```bash
+# opsi 1: binary (systemd unit tersedia di deploy/lightpanda.service)
+curl -L -o ~/.local/bin/lightpanda \
+  https://github.com/lightpanda-io/browser/releases/download/nightly/lightpanda-x86_64-linux
+chmod +x ~/.local/bin/lightpanda
+~/.local/bin/lightpanda serve --obey-robots --host 127.0.0.1 --port 9222
+
+# opsi 2: Docker
+docker run -d --name lightpanda -p 127.0.0.1:9222:9222 lightpanda/browser:nightly
+
+# lalu set env untuk crawler-api
+export CRAWLER_CDP_URL=ws://127.0.0.1:9222
+```
+
+Tanpa `CRAWLER_CDP_URL`, request dengan `render_js: true` ditolak `422`.
+Lightpanda masih Beta — bila sebuah situs gagal render, fallback pakai
+Chrome headless (`chromium --headless --remote-debugging-port=9222`) tanpa
+mengubah kode.
 
 ## Etika & rate-limit crawler
 

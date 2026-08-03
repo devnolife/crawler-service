@@ -1,0 +1,17 @@
+[Unit]
+Description=Lightpanda headless browser (CDP server untuk crawler-service render_js)
+Documentation=https://github.com/lightpanda-io/browser
+After=network.target
+
+[Service]
+Type=simple
+# Unduh binary: curl -L -o ~/.local/bin/lightpanda \
+#   https://github.com/lightpanda-io/browser/releases/download/nightly/lightpanda-x86_64-linux
+# chmod +x ~/.local/bin/lightpanda
+ExecStart=%h/.local/bin/lightpanda serve --obey-robots --host 127.0.0.1 --port 9222
+Environment=LIGHTPANDA_DISABLE_TELEMETRY=true
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=default.target

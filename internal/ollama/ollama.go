@@ -37,6 +37,16 @@ func NewFromEnv() *Client {
 
 // Generate memanggil /api/generate non-streaming dan mengembalikan teks respons.
 func (c *Client) Generate(ctx context.Context, prompt string, temperature float64, maxTokens int) (string, error) {
+	return c.generate(ctx, prompt, temperature, maxTokens, nil)
+}
+
+// GenerateStructured seperti Generate tetapi memaksa output mengikuti JSON
+// schema lewat field "format" Ollama (constrained decoding).
+func (c *Client) GenerateStructured(ctx context.Context, prompt string, temperature float64, maxTokens int, schema json.RawMessage) (string, error) {
+	return c.generate(ctx, prompt, temperature, maxTokens, schema)
+}
+
+func (c *Client) generate(ctx context.Context, prompt string, temperature float64, maxTokens int, format json.RawMessage) (string, error) {
 	payload := map[string]any{
 		"model":  c.Model,
 		"prompt": prompt,
@@ -45,6 +55,9 @@ func (c *Client) Generate(ctx context.Context, prompt string, temperature float6
 			"temperature": temperature,
 			"num_predict": maxTokens,
 		},
+	}
+	if len(format) > 0 {
+		payload["format"] = format
 	}
 	body, err := json.Marshal(payload)
 	if err != nil {

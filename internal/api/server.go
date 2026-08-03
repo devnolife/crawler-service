@@ -23,6 +23,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/devnolife/crawler-service/internal/ollama"
+	"github.com/devnolife/crawler-service/internal/scrape"
 )
 
 // Server memegang dependensi bersama seluruh handler.
@@ -32,6 +33,8 @@ type Server struct {
 	log    *slog.Logger
 	keys   map[string]string // api key -> nama client
 	limit  int               // request per menit per client
+	jobs   scrape.Runner     // job crawl/batch async (in-memory atau Redis)
+	render *scrape.Renderer  // browser CDP (Lightpanda) utk render_js
 	mu     sync.Mutex
 	window map[string][]time.Time
 }
@@ -47,14 +50,46 @@ func New(pool *pgxpool.Pool, logger *slog.Logger) *Server {
 			limit = n
 		}
 	}
-	return &Server{
+	s := &Server{
 		pool:   pool,
 		llm:    ollama.NewFromEnv(),
 		log:    logger,
 		keys:   parseAPIKeys(os.Getenv("CRAWLER_API_KEYS")),
 		limit:  limit,
+		render: scrape.NewRendererFromEnv(),
 		window: map[string][]time.Time{},
 	}
+	s.jobs = newRunner(s, logger)
+	return s
+}
+
+// newRunner memilih Runner: Redis (durable) bila CRAWLER_REDIS_ADDR di-set
+// dan terjangkau, selain itu in-memory.
+func newRunner(s *Server, logger *slog.Logger) scrape.Runner {
+	deps := scrape.Deps{
+		Renderer:    s.render,
+		PersistPage: s.persistPage,
+	}
+	if addr := strings.TrimSpace(os.Getenv("CRAWLER_REDIS_ADDR")); addr != "" {
+		r, err := scrape.NewRedisRunner(addr, crawlConcurrency(), deps, logger)
+		if err != nil {
+			logger.Warn("Redis runner gagal, fallback in-memory", "addr", addr, "err", err)
+		} else {
+			logger.Info("job runner: Redis/asynq", "addr", addr)
+			return r
+		}
+	}
+	return scrape.NewInMemoryRunner(crawlConcurrency(), deps)
+}
+
+// crawlConcurrency membaca CRAWLER_CRAWL_CONCURRENCY (default 2).
+func crawlConcurrency() int {
+	if v := os.Getenv("CRAWLER_CRAWL_CONCURRENCY"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			return n
+		}
+	}
+	return 2
 }
 
 // parseAPIKeys mem-parse "key1:studio-revisi,key2:wizard-research".
@@ -85,6 +120,14 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/v1/citations/suggest", s.handleCitations)
 	mux.HandleFunc("POST /api/v1/similarity/check", s.handleSimilarity)
 	mux.HandleFunc("POST /api/v1/research/title-suggest", s.handleTitleSuggest)
+	mux.HandleFunc("POST /api/v1/scrape", s.handleScrape)
+	mux.HandleFunc("POST /api/v1/crawl", s.handleCrawlStart)
+	mux.HandleFunc("GET /api/v1/crawl/{id}", s.handleCrawlStatus)
+	mux.HandleFunc("POST /api/v1/extract", s.handleExtract)
+	mux.HandleFunc("POST /api/v1/map", s.handleMap)
+	mux.HandleFunc("GET /api/v1/pages/search", s.handlePagesSearch)
+	mux.HandleFunc("POST /api/v1/batch/scrape", s.handleBatchStart)
+	mux.HandleFunc("GET /api/v1/batch/scrape/{id}", s.handleCrawlStatus)
 	return s.middleware(mux)
 }
 
