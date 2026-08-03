@@ -30,8 +30,9 @@ crawler-service/
 ## Build
 
 ```bash
-go build -o bin/crawler-api   ./cmd/api
-go build -o bin/crawler-crawl ./cmd/crawl
+go build -o bin/crawler-api    ./cmd/api
+go build -o bin/crawler-crawl  ./cmd/crawl
+go build -o bin/crawler-worker ./cmd/worker
 ```
 
 ## Jalankan crawler EPrints
@@ -85,7 +86,8 @@ Env:
 | `CRAWLER_RATE_LIMIT_PER_MINUTE` | `120` | sliding window per client |
 | `CRAWLER_CRAWL_CONCURRENCY` | `2` | job crawl on-demand paralel maksimal |
 | `CRAWLER_REDIS_ADDR` | (kosong = in-memory) | Redis untuk job queue durable (asynq): job tahan restart, retry otomatis |
-| `CRAWLER_CDP_URL` | (kosong = render_js mati) | endpoint CDP browser headless, mis. `ws://127.0.0.1:9222` (Lightpanda) |
+| `CRAWLER_CDP_URL` | (kosong = render_js mati) | endpoint CDP browser headless, mis. `ws://127.0.0.1:9222` (Lightpanda); boleh banyak dipisah koma → round-robin fleet |
+| `CRAWLER_PROXY_URLS` | (kosong = koneksi langsung) | daftar proxy dipisah koma (`http`/`https`/`socks5`), dirotasi round-robin; 403/429 di-retry dengan proxy berikutnya |
 | `CRAWLER_WEBHOOK_SECRET` | (kosong = tanpa signature) | secret HMAC-SHA256 untuk header `X-Signature` webhook |
 | `OLLAMA_URL` | `http://127.0.0.1:11434` | untuk title-suggest |
 | `OLLAMA_MODEL` | `qwen2.5:7b-instruct` | model Ollama |
@@ -137,6 +139,30 @@ Tanpa `CRAWLER_CDP_URL`, request dengan `render_js: true` ditolak `422`.
 Lightpanda masih Beta — bila sebuah situs gagal render, fallback pakai
 Chrome headless (`chromium --headless --remote-debugging-port=9222`) tanpa
 mengubah kode.
+
+## Skala horizontal (fleet)
+
+Dengan `CRAWLER_REDIS_ADDR`, job crawl/batch masuk queue Redis dan bisa
+dikerjakan banyak proses sekaligus — termasuk di mesin berbeda:
+
+```bash
+# mesin A: API (punya worker embedded)
+CRAWLER_REDIS_ADDR=10.0.0.1:6379 bin/crawler-api
+
+# mesin B, C, ...: worker tambahan (tanpa HTTP)
+CRAWLER_REDIS_ADDR=10.0.0.1:6379 \
+CRAWLER_CRAWL_CONCURRENCY=8 \
+CRAWLER_CDP_URL=ws://127.0.0.1:9222,ws://127.0.0.1:9223 \
+  bin/crawler-worker
+```
+
+asynq membagi job otomatis antar seluruh worker; `job_id` tetap bisa
+di-poll lewat API mana pun karena state disimpan di Redis. Unit systemd:
+`deploy/crawler-worker.service`.
+
+Tiap worker boleh menunjuk beberapa endpoint CDP (fleet browser) dan
+daftar proxy sendiri, sehingga kapasitas render dan jalur keluar bisa
+ditambah tanpa mengubah kode.
 
 ## Etika & rate-limit crawler
 

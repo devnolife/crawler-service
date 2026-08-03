@@ -1,0 +1,14 @@
+[Unit]
+Description=crawler-service worker (job crawl/batch dari queue Redis)
+After=network.target redis.service
+
+[Service]
+Type=simple
+WorkingDirectory=%h/crawler-service
+EnvironmentFile=-%h/crawler-service/.env
+ExecStart=%h/crawler-service/bin/crawler-worker
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=default.target

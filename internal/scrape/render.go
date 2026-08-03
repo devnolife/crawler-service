@@ -8,6 +8,7 @@ import (
 	"net/url"
 	"os"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/chromedp/chromedp"
@@ -18,10 +19,13 @@ import (
 // (https://github.com/lightpanda-io/browser) tetapi kompatibel dengan
 // browser CDP apa pun (Chrome/Chromium headless, browserless, dll).
 //
-// Konfigurasi: env CRAWLER_CDP_URL, contoh "ws://127.0.0.1:9222".
+// Konfigurasi: env CRAWLER_CDP_URL — satu atau lebih endpoint dipisah koma
+// (mis. "ws://127.0.0.1:9222,ws://127.0.0.1:9223"); render dibagi
+// round-robin ke seluruh endpoint (fleet browser).
 // Kosong = JS rendering tidak tersedia.
 type Renderer struct {
-	cdpURL string
+	cdpURLs []string
+	counter atomic.Uint64
 }
 
 // ErrRenderUnavailable menandakan CRAWLER_CDP_URL tidak dikonfigurasi.
@@ -30,14 +34,26 @@ var ErrRenderUnavailable = errors.New("render_js tidak tersedia: set CRAWLER_CDP
 // renderTimeout adalah batas default satu render.
 const renderTimeout = 20 * time.Second
 
-// NewRendererFromEnv membaca CRAWLER_CDP_URL. Selalu mengembalikan Renderer;
-// Available() false bila env kosong.
+// NewRendererFromEnv membaca CRAWLER_CDP_URL (boleh banyak, dipisah koma).
+// Selalu mengembalikan Renderer; Available() false bila env kosong.
 func NewRendererFromEnv() *Renderer {
-	return &Renderer{cdpURL: strings.TrimSpace(os.Getenv("CRAWLER_CDP_URL"))}
+	r := &Renderer{}
+	for _, part := range strings.Split(os.Getenv("CRAWLER_CDP_URL"), ",") {
+		if part = strings.TrimSpace(part); part != "" {
+			r.cdpURLs = append(r.cdpURLs, part)
+		}
+	}
+	return r
 }
 
 // Available melaporkan apakah JS rendering dikonfigurasi.
-func (r *Renderer) Available() bool { return r.cdpURL != "" }
+func (r *Renderer) Available() bool { return len(r.cdpURLs) > 0 }
+
+// nextCDP memilih endpoint CDP berikutnya (round-robin).
+func (r *Renderer) nextCDP() string {
+	n := r.counter.Add(1)
+	return r.cdpURLs[(n-1)%uint64(len(r.cdpURLs))]
+}
 
 // RenderHTML membuka url di browser CDP, menunggu dokumen siap, dan
 // mengembalikan outerHTML hasil eksekusi JavaScript.
@@ -60,7 +76,7 @@ func (r *Renderer) RenderHTML(ctx context.Context, rawURL string, allowPrivate b
 	ctx, cancel := context.WithTimeout(ctx, renderTimeout)
 	defer cancel()
 
-	allocCtx, cancelAlloc := chromedp.NewRemoteAllocator(ctx, r.cdpURL)
+	allocCtx, cancelAlloc := chromedp.NewRemoteAllocator(ctx, r.nextCDP())
 	defer cancelAlloc()
 	browserCtx, cancelBrowser := chromedp.NewContext(allocCtx)
 	defer cancelBrowser()

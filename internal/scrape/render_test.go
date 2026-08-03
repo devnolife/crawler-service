@@ -19,9 +19,30 @@ func TestRendererUnavailable(t *testing.T) {
 }
 
 func TestRendererInvalidURL(t *testing.T) {
-	r := &Renderer{cdpURL: "ws://127.0.0.1:9222"}
+	r := &Renderer{cdpURLs: []string{"ws://127.0.0.1:9222"}}
 	if _, err := r.RenderHTML(context.Background(), "bukan-url", true); err == nil {
 		t.Fatal("mau error untuk URL tidak valid")
+	}
+}
+
+func TestRendererPoolRoundRobin(t *testing.T) {
+	r := &Renderer{cdpURLs: []string{"ws://a:9222", "ws://b:9222"}}
+	if got := r.nextCDP(); got != "ws://a:9222" {
+		t.Errorf("cdp #1 = %s", got)
+	}
+	if got := r.nextCDP(); got != "ws://b:9222" {
+		t.Errorf("cdp #2 = %s", got)
+	}
+	if got := r.nextCDP(); got != "ws://a:9222" {
+		t.Errorf("cdp #3 (wrap) = %s", got)
+	}
+}
+
+func TestNewRendererFromEnvMulti(t *testing.T) {
+	t.Setenv("CRAWLER_CDP_URL", "ws://x:9222, ws://y:9223 ,")
+	r := NewRendererFromEnv()
+	if len(r.cdpURLs) != 2 {
+		t.Fatalf("cdpURLs = %v, mau 2 entri", r.cdpURLs)
 	}
 }
 

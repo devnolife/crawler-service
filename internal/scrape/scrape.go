@@ -89,30 +89,66 @@ func Scrape(ctx context.Context, opts Options) (*Result, error) {
 		return scrapeRendered(ctx, opts, target)
 	}
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, target.String(), nil)
+	status, body, err := fetchPage(ctx, opts, target)
 	if err != nil {
 		return nil, err
 	}
-	req.Header.Set("User-Agent", UserAgent)
-	req.Header.Set("Accept", "text/html,application/xhtml+xml")
+	return buildResult(string(body), target, status, opts)
+}
 
-	resp, err := client.Do(req)
-	if err != nil {
-		return nil, fmt.Errorf("fetch %s: %w", target, err)
+// fetchPage mengunduh HTML target. Bila CRAWLER_PROXY_URLS di-set, request
+// lewat proxy round-robin; respons 403/429 (indikasi diblokir) dicoba ulang
+// sekali dengan proxy berikutnya.
+func fetchPage(ctx context.Context, opts Options, target *url.URL) (int, []byte, error) {
+	attempts := 1
+	if proxyConfigured() {
+		attempts = 2
+		// Dengan proxy, resolusi DNS target terjadi di proxy sehingga guard
+		// dial tidak melihatnya — validasi target di sini (anti-SSRF).
+		if !opts.AllowPrivateHosts {
+			if err := checkPublicHost(ctx, target.Hostname()); err != nil {
+				return 0, nil, err
+			}
+		}
 	}
-	defer resp.Body.Close()
 
-	ct := resp.Header.Get("Content-Type")
-	if ct != "" && !strings.Contains(ct, "html") && !strings.Contains(ct, "xml") {
-		return nil, fmt.Errorf("content-type tidak didukung: %s", ct)
+	var lastErr error
+	for i := 0; i < attempts; i++ {
+		client := newFetchClient(opts.AllowPrivateHosts)
+
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, target.String(), nil)
+		if err != nil {
+			return 0, nil, err
+		}
+		req.Header.Set("User-Agent", UserAgent)
+		req.Header.Set("Accept", "text/html,application/xhtml+xml")
+
+		resp, err := client.Do(req)
+		if err != nil {
+			lastErr = fmt.Errorf("fetch %s: %w", target, err)
+			continue
+		}
+
+		if resp.StatusCode == http.StatusForbidden || resp.StatusCode == http.StatusTooManyRequests {
+			resp.Body.Close()
+			lastErr = fmt.Errorf("fetch %s: diblokir (HTTP %d)", target, resp.StatusCode)
+			continue // coba proxy berikutnya
+		}
+
+		ct := resp.Header.Get("Content-Type")
+		if ct != "" && !strings.Contains(ct, "html") && !strings.Contains(ct, "xml") {
+			resp.Body.Close()
+			return 0, nil, fmt.Errorf("content-type tidak didukung: %s", ct)
+		}
+
+		body, err := io.ReadAll(io.LimitReader(resp.Body, maxBodyBytes))
+		resp.Body.Close()
+		if err != nil {
+			return 0, nil, fmt.Errorf("baca body: %w", err)
+		}
+		return resp.StatusCode, body, nil
 	}
-
-	body, err := io.ReadAll(io.LimitReader(resp.Body, maxBodyBytes))
-	if err != nil {
-		return nil, fmt.Errorf("baca body: %w", err)
-	}
-
-	return buildResult(string(body), target, resp.StatusCode, opts)
+	return 0, nil, lastErr
 }
 
 // scrapeRendered mengambil HTML lewat browser CDP lalu memakai pipeline
@@ -186,14 +222,27 @@ func checkRobots(ctx context.Context, client *http.Client, target *url.URL) erro
 	return nil
 }
 
-// newClient membuat http.Client dengan guard anti-SSRF: setiap koneksi
-// (termasuk setelah redirect) divalidasi agar tidak menuju IP privat,
-// loopback, atau link-local. Validasi di level dial mencegah DNS rebinding.
+// newClient membuat http.Client koneksi langsung dengan guard anti-SSRF:
+// setiap koneksi (termasuk setelah redirect) divalidasi agar tidak menuju
+// IP privat, loopback, atau link-local. Validasi di level dial mencegah
+// DNS rebinding.
 func newClient(allowPrivate bool) *http.Client {
+	return buildClient(allowPrivate, nil)
+}
+
+// newFetchClient seperti newClient tetapi memakai proxy round-robin bila
+// CRAWLER_PROXY_URLS di-set. Dengan proxy, guard dial melewati validasi
+// (koneksi menuju proxy, bukan target) — pemanggil wajib memvalidasi
+// target lewat checkPublicHost.
+func newFetchClient(allowPrivate bool) *http.Client {
+	return buildClient(allowPrivate, nextProxy())
+}
+
+func buildClient(allowPrivate bool, proxy *url.URL) *http.Client {
 	dialer := &net.Dialer{Timeout: 10 * time.Second}
 	transport := &http.Transport{
 		DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
-			if !allowPrivate {
+			if !allowPrivate && proxy == nil {
 				host, _, err := net.SplitHostPort(addr)
 				if err != nil {
 					return nil, err
@@ -210,6 +259,9 @@ func newClient(allowPrivate bool) *http.Client {
 			}
 			return dialer.DialContext(ctx, network, addr)
 		},
+	}
+	if proxy != nil {
+		transport.Proxy = http.ProxyURL(proxy)
 	}
 	return &http.Client{
 		Transport: transport,
