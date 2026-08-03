@@ -1,18 +1,28 @@
 """FastAPI service that exposes crawled `papers` over HTTP.
 
+Shared crawling service — dipakai lintas project (studio-revisi,
+wizard-research, dll) lewat API key per client.
+
 Run:
     uvicorn api.main:app --host 127.0.0.1 --port 8770
+
+Auth (opsional, aktif bila env di-set):
+    CRAWLER_API_KEYS="<key>:<client>,<key2>:<client2>"
+    Request wajib kirim header `X-API-Key`. /health tetap publik.
 """
 from __future__ import annotations
 
 import json
 import logging
 import os
+import time
+from collections import defaultdict, deque
 from typing import Optional
 
 import httpx
-from fastapi import FastAPI, HTTPException, Query
+from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
 from revisi_crawler import db as crawler_db
@@ -23,12 +33,66 @@ logger = logging.getLogger("crawler.api")
 OLLAMA_URL = os.environ.get("OLLAMA_URL", "http://127.0.0.1:11434")
 OLLAMA_MODEL = os.environ.get("OLLAMA_MODEL", "qwen2.5:7b-instruct")
 
+# ── Multi-client auth ──────────────────────────────────────────────────────────
+# CRAWLER_API_KEYS="key1:studio-revisi,key2:wizard-research" (client label
+# opsional; tanpa label memakai "default"). Kosong = auth mati (dev mode).
+
+
+def _parse_api_keys(raw: str) -> dict[str, str]:
+    keys: dict[str, str] = {}
+    for part in raw.split(","):
+        part = part.strip()
+        if not part:
+            continue
+        key, _, client = part.partition(":")
+        keys[key.strip()] = client.strip() or "default"
+    return keys
+
+
+API_KEYS = _parse_api_keys(os.environ.get("CRAWLER_API_KEYS", ""))
+RATE_LIMIT_PER_MINUTE = int(os.environ.get("CRAWLER_RATE_LIMIT_PER_MINUTE", "120"))
+_PUBLIC_PATHS = {"/health", "/docs", "/openapi.json"}
+_request_log: dict[str, deque[float]] = defaultdict(deque)
+
 
 app = FastAPI(
-    title="Revisi Studio Crawler API",
-    version="0.1.0",
-    description="Search crawled academic repositories.",
+    title="Crawler Service API",
+    version="0.2.0",
+    description="Shared academic crawling service — search, citations, similarity, title suggestions.",
 )
+
+
+@app.middleware("http")
+async def auth_and_rate_limit(request: Request, call_next):
+    if request.url.path in _PUBLIC_PATHS or request.method == "OPTIONS":
+        return await call_next(request)
+
+    client = "anonymous"
+    if API_KEYS:
+        key = request.headers.get("X-API-Key", "")
+        client_or_none = API_KEYS.get(key)
+        if client_or_none is None:
+            return JSONResponse({"detail": "invalid or missing X-API-Key"}, status_code=401)
+        client = client_or_none
+
+    # Sliding-window rate limit per client (in-memory, single process).
+    now = time.monotonic()
+    window = _request_log[client]
+    while window and now - window[0] > 60:
+        window.popleft()
+    if len(window) >= RATE_LIMIT_PER_MINUTE:
+        return JSONResponse(
+            {"detail": f"rate limit exceeded ({RATE_LIMIT_PER_MINUTE}/min)"},
+            status_code=429,
+            headers={"Retry-After": "60"},
+        )
+    window.append(now)
+
+    request.state.client = client
+    response = await call_next(request)
+    response.headers["X-Client"] = client
+    return response
+
 
 app.add_middleware(
     CORSMiddleware,

@@ -3,4 +3,5 @@ Twisted>=26.4,<27
 itemadapter>=0.8
 psycopg[binary]>=3.2,<4
 fastapi>=0.115,<1
+httpx>=0.27,<1
 uvicorn[standard]>=0.30,<1
