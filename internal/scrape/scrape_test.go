@@ -82,6 +82,29 @@ func TestScrapeBlockedByRobots(t *testing.T) {
 	}
 }
 
+// TestScrapeBlockedByRobotsQuery: aturan berbasis query string harus dihormati
+// (mis. "Disallow: /artikel?*" saat /artikel sendiri diizinkan).
+func TestScrapeBlockedByRobotsQuery(t *testing.T) {
+	srv := newTestServer(t, "User-agent: *\nDisallow: /artikel?*\n")
+
+	// Tanpa query → boleh.
+	if _, err := Scrape(context.Background(), Options{
+		URL:               srv.URL + "/artikel",
+		AllowPrivateHosts: true,
+	}); err != nil {
+		t.Fatalf("tanpa query harusnya diizinkan, dapat: %v", err)
+	}
+
+	// Dengan query → diblokir.
+	_, err := Scrape(context.Background(), Options{
+		URL:               srv.URL + "/artikel?q=x",
+		AllowPrivateHosts: true,
+	})
+	if err == nil || !strings.Contains(err.Error(), "robots.txt") {
+		t.Fatalf("URL berquery harus diblok robots.txt, dapat: %v", err)
+	}
+}
+
 func TestScrapeRejectsPrivateHost(t *testing.T) {
 	srv := newTestServer(t, "")
 	_, err := Scrape(context.Background(), Options{URL: srv.URL + "/artikel"})

@@ -119,7 +119,12 @@ func (c *Crawler) allowed(rawURL string) bool {
 	if err != nil {
 		return false
 	}
-	return c.robots.FindGroup(UserAgent).Test(u.Path)
+	// Uji path+query: banyak situs melarang berdasarkan query string.
+	path := u.Path
+	if u.RawQuery != "" {
+		path += "?" + u.RawQuery
+	}
+	return c.robots.FindGroup(UserAgent).Test(path)
 }
 
 // fetch mengambil satu URL dengan politeness delay + retry ringan.

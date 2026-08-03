@@ -227,7 +227,7 @@ func crawl(ctx context.Context, opts CrawlOptions, seed *url.URL) ([]*Result, []
 
 		if robots != nil {
 			if u, err := url.Parse(cur.url); err == nil &&
-				!robots.FindGroup(UserAgent).Test(u.Path) {
+				!robots.FindGroup(UserAgent).Test(robotsPath(u)) {
 				pageErrs = append(pageErrs, PageError{cur.url, ErrBlockedByRobots.Error()})
 				continue
 			}

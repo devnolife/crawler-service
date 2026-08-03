@@ -216,10 +216,20 @@ func checkRobots(ctx context.Context, client *http.Client, target *url.URL) erro
 	if err != nil {
 		return nil
 	}
-	if !robots.FindGroup(UserAgent).Test(target.Path) {
+	if !robots.FindGroup(UserAgent).Test(robotsPath(target)) {
 		return fmt.Errorf("%w: %s", ErrBlockedByRobots, target)
 	}
 	return nil
+}
+
+// robotsPath mengembalikan path+query untuk diuji ke robots.txt. Banyak situs
+// melarang berdasarkan query (mis. "Disallow: /search?*"), sehingga menguji
+// path saja akan melewatkan aturan tersebut.
+func robotsPath(u *url.URL) string {
+	if u.RawQuery == "" {
+		return u.Path
+	}
+	return u.Path + "?" + u.RawQuery
 }
 
 // newClient membuat http.Client koneksi langsung dengan guard anti-SSRF:
