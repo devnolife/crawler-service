@@ -1,12 +1,12 @@
 [Unit]
-Description=Revisi Studio crawler search API
+Description=Crawler Service — shared academic crawling API (Go)
 After=network.target
 
 [Service]
 Type=simple
-WorkingDirectory=%h/studio-revisi/crawler
-EnvironmentFile=-%h/studio-revisi/crawler/.env
-ExecStart=%h/studio-revisi/crawler/bin/crawler-api --addr 127.0.0.1:8770
+WorkingDirectory=%h/crawler-service
+EnvironmentFile=-%h/crawler-service/.env
+ExecStart=%h/crawler-service/bin/crawler-api --addr 127.0.0.1:8770
 Restart=on-failure
 RestartSec=5
 
