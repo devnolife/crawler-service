@@ -186,6 +186,10 @@ systemctl --user daemon-reload
 systemctl --user enable --now crawler-api
 ```
 
+Backup `revisi_crawler` **tidak** diurus repo ini — sudah tercakup timer
+`revisi-db-backup.timer` milik repo `studio-revisi-core`
+(`deploy/backup/revisi-db-backup.sh`, pg_dump harian + retensi 14 hari).
+
 ## Roadmap
 
 - [ ] Crawler tambahan: data.go.id (CKAN API), BPS, OpenAlex
