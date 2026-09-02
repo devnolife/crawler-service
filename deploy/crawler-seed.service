@@ -1,0 +1,18 @@
+[Unit]
+Description=crawler-service — re-crawl mingguan repositori EPrints terkurasi
+# Butuh Postgres yang sama dengan crawler-api; jalankan setelah jaringan naik.
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=%h/crawler-service
+EnvironmentFile=-%h/crawler-service/.env
+# Idempotent (upsert), aman diulang. Skrip membangun bin/crawler-crawl bila
+# belum ada, jadi `go` harus ada di PATH user.
+ExecStart=%h/crawler-service/scripts/seed-crawl.sh
+# Satu putaran seluruh target biasanya < 30 menit; batasi agar tidak menumpuk
+# bila situs target menggantung.
+TimeoutStartSec=2h
+Nice=10
+IOSchedulingClass=idle

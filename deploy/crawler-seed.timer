@@ -1,0 +1,12 @@
+[Unit]
+Description=Jadwal re-crawl mingguan crawler-service
+
+[Timer]
+# Minggu 02:00 waktu lokal; Persistent menjalankan putaran yang terlewat
+# (mesin mati) segera setelah boot berikutnya.
+OnCalendar=Sun *-*-* 02:00:00
+RandomizedDelaySec=30m
+Persistent=true
+
+[Install]
+WantedBy=timers.target

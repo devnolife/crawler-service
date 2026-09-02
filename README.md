@@ -21,7 +21,7 @@ crawler-service/
 │   ├── db/             # koneksi Postgres + skema + upsert
 │   ├── model/          # tipe Paper bersama
 │   └── ollama/         # klien Ollama /api/generate
-├── deploy/crawler-api.service
+├── deploy/                 # unit systemd: api, worker, lightpanda, seed (+timer)
 ├── scripts/seed-crawl.sh
 ├── go.mod
 └── README.md
@@ -186,6 +186,25 @@ systemctl --user daemon-reload
 systemctl --user enable --now crawler-api
 ```
 
+### Re-crawl mingguan (systemd timer)
+
+`deploy/crawler-seed.timer` menjalankan `scripts/seed-crawl.sh` setiap Minggu
+02:00 waktu lokal (acak +≤30 menit, `Persistent=true` — putaran yang terlewat
+karena mesin mati dikejar saat boot berikutnya). Upsert idempotent, jadi aman
+diulang.
+
+```bash
+cp deploy/crawler-seed.service deploy/crawler-seed.timer ~/.config/systemd/user/
+systemctl --user daemon-reload
+systemctl --user enable --now crawler-seed.timer
+systemctl --user list-timers crawler-seed.timer     # jadwal berikutnya
+systemctl --user start crawler-seed.service         # jalankan manual sekarang
+journalctl --user -u crawler-seed -f
+```
+
+Unit menganggap repo berada di `~/crawler-service` (sama seperti unit lain di
+`deploy/`); sesuaikan `WorkingDirectory`/`ExecStart` bila lokasinya berbeda.
+
 Backup `revisi_crawler` **tidak** diurus repo ini — sudah tercakup timer
 `revisi-db-backup.timer` milik repo `studio-revisi-core`
 (`deploy/backup/revisi-db-backup.sh`, pg_dump harian + retensi 14 hari).
@@ -193,7 +212,7 @@ Backup `revisi_crawler` **tidak** diurus repo ini — sudah tercakup timer
 ## Roadmap
 
 - [ ] Crawler tambahan: data.go.id (CKAN API), BPS, OpenAlex
-- [ ] Scheduler internal (cron/systemd timer): re-crawl mingguan
+- [x] Scheduler re-crawl mingguan — `deploy/crawler-seed.timer`
 - [ ] Webapp page: `/research/data-finder` consume endpoint search
 
 ## Catatan deploy
