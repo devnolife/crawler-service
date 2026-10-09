@@ -51,6 +51,11 @@ type searchResponse struct {
 	Items []model.Paper `json:"items"`
 }
 
+// searchOrderBy diakhiri kunci unik (id) agar paginasi offset stabil: ratusan baris hasil
+// ingest massal berbagi (year, scraped_at) yang sama, dan tanpa tiebreaker Postgres bebas
+// mengurutkan baris seri berbeda di tiap halaman (baris terlewat/ganda saat sinkron).
+const searchOrderBy = " ORDER BY year DESC NULLS LAST, scraped_at DESC, id DESC"
+
 func (s *Server) handleSearch(w http.ResponseWriter, r *http.Request) {
 	qp := r.URL.Query()
 	q := qp.Get("q")
@@ -111,7 +116,7 @@ func (s *Server) handleSearch(w http.ResponseWriter, r *http.Request) {
 	}
 
 	listSQL := "SELECT " + paperColumns + " FROM papers " + whereSQL +
-		" ORDER BY year DESC NULLS LAST, scraped_at DESC" +
+		searchOrderBy +
 		" LIMIT " + arg(limit) + " OFFSET " + arg(offset)
 
 	items, err := s.queryPapers(ctx, listSQL, args...)

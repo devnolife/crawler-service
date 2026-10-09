@@ -4,6 +4,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"reflect"
+	"strings"
 	"testing"
 
 	"github.com/devnolife/crawler-service/internal/model"
@@ -106,5 +107,12 @@ func TestFormatCitations(t *testing.T) {
 	apa := formatAPA(p)
 	if want := "Sari, Dewi, Putra, Adi (2021). Judul Uji. eprints:eprints.ums.ac.id. https://eprints.ums.ac.id/id/eprint/59935"; apa != want {
 		t.Errorf("apa = %q", apa)
+	}
+}
+
+func TestSearchOrderEndsWithUniqueKey(t *testing.T) {
+	// Paginasi offset hanya deterministik bila urutan diakhiri kolom unik.
+	if !strings.HasSuffix(searchOrderBy, ", id DESC") {
+		t.Fatalf("searchOrderBy harus diakhiri tiebreaker id, dapat %q", searchOrderBy)
 	}
 }
